@@ -14,4 +14,6 @@ export type AuthContextType = {
   logout: () => void;
   loading: boolean;
   error: string | null;
+  authInitialized: boolean;
+  refreshUser?: () => Promise<void>;
 };

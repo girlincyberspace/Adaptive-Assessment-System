@@ -2,6 +2,9 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../services/api";
+import { marked } from "marked";
+// Import your auth context or user context
+// import { useAuth } from "../contexts/AuthContext";
 
 type Question = {
   id: string;
@@ -19,6 +22,7 @@ type Evaluation = {
 export default function AssessmentPage() {
   const location = useLocation();
   const navigate = useNavigate();
+  // const { user } = useAuth(); // Uncomment and use your auth context
   const [question, setQuestion] = useState<Question | null>(null);
   const [answer, setAnswer] = useState("");
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
@@ -32,17 +36,41 @@ export default function AssessmentPage() {
       setLoading(true);
       try {
         let sessionData = location.state?.sessionData;
+        console.log("Session data:", sessionData);
 
         if (!sessionData) {
-          const response = await api.post("/assessment/start");
+          const userId = localStorage.getItem("userId");
+          if (!userId) {
+            console.error("No userId found, redirecting to login");
+            navigate("/login");
+            return;
+          }
+
+          const response = await api.post("/assessment/start", {
+            userId: userId,
+          });
           sessionData = response.data;
         }
 
         // Get first question
         const questionResponse = await api.post("/assessment/question", {
-          topic: sessionData.recommendedTopic,
+          topic: sessionData.recommendedTopic || "Programming",
         });
-        setQuestion(questionResponse.data);
+
+        console.log("Question response:", questionResponse.data);
+        const backendData = questionResponse.data;
+        const transformedQuestion: Question = {
+          id: backendData.id || "question-1",
+          content:
+            backendData.question ||
+            backendData.content ||
+            "No question content available",
+          topic:
+            backendData.topic || sessionData.recommendedTopic || "Programming",
+          difficulty: backendData.difficulty || "Medium",
+        };
+
+        setQuestion(transformedQuestion);
       } catch (error) {
         console.error("Assessment initialization failed:", error);
         navigate("/dashboard");
@@ -145,22 +173,26 @@ export default function AssessmentPage() {
 
             {/* Question Content */}
             <div className="p-6">
+              {/* Convert markdown-style content to readable format */}
               <div
                 className="prose max-w-none mb-6"
-                dangerouslySetInnerHTML={{ __html: question.content }}
+                dangerouslySetInnerHTML={{
+                  __html: marked(question.content || ""),
+                }}
               />
 
-              {/* Answer Area */}
+              {/* Rest of your component remains the same */}
               <div className="mt-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Your Answer
                 </label>
                 <textarea
                   rows={8}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono"
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}
                   disabled={!!evaluation}
+                  placeholder="Write your Python code here..."
                 />
               </div>
 
@@ -170,12 +202,14 @@ export default function AssessmentPage() {
                   <>
                     <button
                       onClick={handleSubmit}
-                      className="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                      disabled={!answer.trim() || loading}
+                      className="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
                     >
-                      Submit Answer
+                      {loading ? "Submitting..." : "Submit Answer"}
                     </button>
                     <button
                       onClick={handleGetHint}
+                      disabled={loading}
                       className="px-6 py-3 bg-purple-100 text-purple-700 font-medium rounded-md hover:bg-purple-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
                     >
                       Get Hint
@@ -204,26 +238,117 @@ export default function AssessmentPage() {
               {/* Evaluation Feedback */}
               {evaluation && (
                 <div className="mt-6">
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">
-                    Feedback
+                  <h3 className="text-lg font-medium text-gray-900 mb-4">
+                    Assessment Results
                   </h3>
                   <div
-                    className={`p-4 rounded-md ${
+                    className={`rounded-lg border-l-4 overflow-hidden ${
                       evaluation.score >= 0.7
-                        ? "bg-green-50 text-green-800"
+                        ? "bg-green-50 border-green-400"
                         : evaluation.score >= 0.4
-                        ? "bg-yellow-50 text-yellow-800"
-                        : "bg-red-50 text-red-800"
+                        ? "bg-yellow-50 border-yellow-400"
+                        : "bg-red-50 border-red-400"
                     }`}
                   >
-                    <div className="flex justify-between">
-                      <strong>Score:</strong>
-                      <span>{Math.round(evaluation.score * 100)}%</span>
-                    </div>
+                    {/* Score Header */}
                     <div
-                      className="prose max-w-none mt-2"
-                      dangerouslySetInnerHTML={{ __html: evaluation.feedback }}
-                    />
+                      className={`px-6 py-4 ${
+                        evaluation.score >= 0.7
+                          ? "bg-green-100"
+                          : evaluation.score >= 0.4
+                          ? "bg-yellow-100"
+                          : "bg-red-100"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <div
+                            className={`w-3 h-3 rounded-full ${
+                              evaluation.score >= 0.7
+                                ? "bg-green-500"
+                                : evaluation.score >= 0.4
+                                ? "bg-yellow-500"
+                                : "bg-red-500"
+                            }`}
+                          ></div>
+                          <span
+                            className={`text-sm font-medium ${
+                              evaluation.score >= 0.7
+                                ? "text-green-800"
+                                : evaluation.score >= 0.4
+                                ? "text-yellow-800"
+                                : "text-red-800"
+                            }`}
+                          >
+                            {evaluation.score >= 0.7
+                              ? "Excellent"
+                              : evaluation.score >= 0.4
+                              ? "Good Effort"
+                              : "Needs Improvement"}
+                          </span>
+                        </div>
+                        <div
+                          className={`text-xl font-bold ${
+                            evaluation.score >= 0.7
+                              ? "text-green-700"
+                              : evaluation.score >= 0.4
+                              ? "text-yellow-700"
+                              : "text-red-700"
+                          }`}
+                        >
+                          {Math.round(evaluation.score * 100)}%
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Formatted Feedback Content */}
+                    <div className="px-6 py-4">
+                      <div
+                        className={`prose prose-sm max-w-none ${
+                          evaluation.score >= 0.7
+                            ? "prose-green"
+                            : evaluation.score >= 0.4
+                            ? "prose-yellow"
+                            : "prose-red"
+                        }`}
+                        style={{
+                          color:
+                            evaluation.score >= 0.7
+                              ? "#065f46"
+                              : evaluation.score >= 0.4
+                              ? "#92400e"
+                              : "#991b1b",
+                        }}
+                        dangerouslySetInnerHTML={{
+                          __html: marked(evaluation.feedback || "", {
+                            breaks: true,
+                            gfm: true,
+                          }),
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Progress Indicator */}
+                  <div className="mt-4">
+                    <div className="flex justify-between text-xs text-gray-500 mb-1">
+                      <span>Progress</span>
+                      <span>
+                        {Math.round(evaluation.score * 100)}% Complete
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full transition-all duration-500 ${
+                          evaluation.score >= 0.7
+                            ? "bg-green-500"
+                            : evaluation.score >= 0.4
+                            ? "bg-yellow-500"
+                            : "bg-red-500"
+                        }`}
+                        style={{ width: `${evaluation.score * 100}%` }}
+                      ></div>
+                    </div>
                   </div>
                 </div>
               )}

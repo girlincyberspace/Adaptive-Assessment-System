@@ -26,10 +26,12 @@ mongoose
 // Import routes
 const assessmentRoutes = require("./routes/assessment");
 const authRoutes = require("./routes/auth");
+const usersRoutes = require("./routes/users");
 
 // Use routes
 app.use("/api/assessment", assessmentRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/users", usersRoutes);
 
 // Serve static files from React app in production
 if (process.env.NODE_ENV === "production") {

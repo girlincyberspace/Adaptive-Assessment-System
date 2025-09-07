@@ -44,13 +44,35 @@ export default function DashboardPage() {
       setError(null);
       try {
         const response = await api.get(`/users/${user.id}/stats`);
-        setStats(response.data);
+        console.log("Raw response:", response.data); // Debug log
+
+        // Ensure all required properties exist with default values
+        const safeStats: UserStats = {
+          totalQuestionsAnswered: response.data?.totalQuestionsAnswered || 0,
+          correctAnswers: response.data?.correctAnswers || 0,
+          accuracy: response.data?.accuracy || 0,
+          strongestConcept: response.data?.strongestConcept || "",
+          weakestConcept: response.data?.weakestConcept || "",
+          avgTimePerQuestion: response.data?.avgTimePerQuestion || "0m 0s",
+          knowledgeStates: response.data?.knowledgeStates || {},
+          recentActivities: Array.isArray(response.data?.recentActivities)
+            ? response.data.recentActivities
+            : [],
+          currentStreaks: response.data?.currentStreaks || {},
+          learningVelocity: response.data?.learningVelocity || {},
+        };
+
+        setStats(safeStats);
       } catch (err: any) {
         console.error("Failed to fetch stats:", err);
-        setError(err.response?.data?.error || "Failed to load dashboard data");
+        setError(
+          err.response?.data?.msg ||
+            err.response?.data?.error ||
+            "Failed to load dashboard data"
+        );
 
-        // Fallback to mock data for demonstration
-        setStats({
+        // Fallback to safe mock data
+        const fallbackStats: UserStats = {
           totalQuestionsAnswered: 0,
           correctAnswers: 0,
           accuracy: 0,
@@ -61,7 +83,9 @@ export default function DashboardPage() {
           recentActivities: [],
           currentStreaks: {},
           learningVelocity: {},
-        });
+        };
+
+        setStats(fallbackStats);
       } finally {
         setLoading(false);
       }
@@ -200,7 +224,9 @@ export default function DashboardPage() {
             <div className="flex flex-col md:flex-row justify-between items-center">
               <div className="mb-6 md:mb-0">
                 <h2 className="text-2xl font-bold">
-                  {stats && Object.keys(stats.knowledgeStates).length > 0
+                  {stats &&
+                  stats.knowledgeStates &&
+                  Object.keys(stats.knowledgeStates).length > 0
                     ? "Continue your learning journey"
                     : "Ready to test your skills?"}
                 </h2>
@@ -209,7 +235,7 @@ export default function DashboardPage() {
                     ? `Your strongest area is ${
                         stats.strongestConcept
                       } (${getMasteryLevel(
-                        stats.knowledgeStates[stats.strongestConcept]
+                        stats.knowledgeStates[stats.strongestConcept] || 0
                       )}). Let's build on your progress!`
                     : "Take our comprehensive assessment to measure your current knowledge level and get personalized recommendations."}
                 </p>
@@ -418,43 +444,44 @@ export default function DashboardPage() {
                   </div>
 
                   {/* Knowledge Map */}
-                  {Object.keys(stats.knowledgeStates).length > 0 && (
-                    <div className="bg-white border border-gray-200 rounded-xl p-5">
-                      <h2 className="text-lg font-semibold mb-4 text-gray-800">
-                        Knowledge Map
-                      </h2>
-                      <div className="space-y-4">
-                        {Object.entries(stats.knowledgeStates)
-                          .sort((a, b) => b[1] - a[1])
-                          .slice(0, 5)
-                          .map(([topic, mastery]) => (
-                            <div key={topic} className="mb-3">
-                              <div className="flex justify-between text-sm mb-1">
-                                <span className="font-medium">{topic}</span>
-                                <span className="text-gray-600">
-                                  {getMasteryLevel(mastery)} (
-                                  {(mastery * 100).toFixed(0)}%)
-                                </span>
+                  {stats?.knowledgeStates &&
+                    Object.keys(stats.knowledgeStates).length > 0 && (
+                      <div className="bg-white border border-gray-200 rounded-xl p-5">
+                        <h2 className="text-lg font-semibold mb-4 text-gray-800">
+                          Knowledge Map
+                        </h2>
+                        <div className="space-y-4">
+                          {Object.entries(stats.knowledgeStates || {})
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 5)
+                            .map(([topic, mastery]) => (
+                              <div key={topic} className="mb-3">
+                                <div className="flex justify-between text-sm mb-1">
+                                  <span className="font-medium">{topic}</span>
+                                  <span className="text-gray-600">
+                                    {getMasteryLevel(mastery)} (
+                                    {(mastery * 100).toFixed(0)}%)
+                                  </span>
+                                </div>
+                                <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                  <div
+                                    className={`h-2.5 rounded-full ${getMasteryColor(
+                                      mastery
+                                    )}`}
+                                    style={{ width: `${mastery * 100}%` }}
+                                  ></div>
+                                </div>
                               </div>
-                              <div className="w-full bg-gray-200 rounded-full h-2.5">
-                                <div
-                                  className={`h-2.5 rounded-full ${getMasteryColor(
-                                    mastery
-                                  )}`}
-                                  style={{ width: `${mastery * 100}%` }}
-                                ></div>
-                              </div>
-                            </div>
-                          ))}
-                        <Link
-                          to="/progress"
-                          className="text-sm text-indigo-600 hover:text-indigo-800 mt-2 inline-block"
-                        >
-                          View full progress report →
-                        </Link>
+                            ))}
+                          <Link
+                            to="/progress"
+                            className="text-sm text-indigo-600 hover:text-indigo-800 mt-2 inline-block"
+                          >
+                            View full progress report →
+                          </Link>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
                   {/* Recommended Next Steps */}
                   <div className="bg-white border border-gray-200 rounded-xl p-5">

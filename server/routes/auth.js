@@ -1,21 +1,17 @@
 const express = require("express");
 const router = express.Router();
 const User = require("../models/User");
-const { generateToken } = require("../utils/jwt");
+const { generateToken, authenticateToken } = require("../utils/jwt");
 
 // Signup
 router.post("/signup", async (req, res) => {
   try {
     const { username, email, password } = req.body;
-
     let user = await User.findOne({ email });
     if (user) return res.status(400).json({ msg: "User already exists" });
-
     user = new User({ username, email, password });
     await user.save();
-
     const token = generateToken(user);
-
     res.json({
       token,
       user: {
@@ -34,18 +30,13 @@ router.post("/signup", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ msg: "Invalid credentials" });
-
     const isMatch = await user.comparePassword(password);
     if (!isMatch) return res.status(400).json({ msg: "Invalid credentials" });
-
     user.lastLogin = Date.now();
     await user.save();
-
     const token = generateToken(user);
-
     res.json({
       token,
       user: {
@@ -59,6 +50,16 @@ router.post("/login", async (req, res) => {
   } catch (err) {
     res.status(500).json({ msg: "Server error", error: err.message });
   }
+});
+
+// Verify token
+router.get("/verify", authenticateToken, (req, res) => {
+  res.json({ valid: true, user: req.user });
+});
+
+// Get current user
+router.get("/me", authenticateToken, (req, res) => {
+  res.json({ user: req.user });
 });
 
 module.exports = router;
