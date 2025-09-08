@@ -3,8 +3,6 @@ import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../services/api";
 import { marked } from "marked";
-// Import your auth context or user context
-// import { useAuth } from "../contexts/AuthContext";
 
 type Question = {
   id: string;
@@ -19,16 +17,30 @@ type Evaluation = {
   nextTopic?: string;
 };
 
+type ProgrammingLanguage = "python" | "java" | "javascript" | "go";
+
+const LANGUAGE_OPTIONS = [
+  { value: "python" as ProgrammingLanguage, label: "Python", icon: "🐍" },
+  { value: "java" as ProgrammingLanguage, label: "Java", icon: "☕" },
+  {
+    value: "javascript" as ProgrammingLanguage,
+    label: "JavaScript",
+    icon: "🟨",
+  },
+  { value: "go" as ProgrammingLanguage, label: "Go", icon: "🐹" },
+];
+
 export default function AssessmentPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  // const { user } = useAuth(); // Uncomment and use your auth context
   const [question, setQuestion] = useState<Question | null>(null);
   const [answer, setAnswer] = useState("");
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
   const [loading, setLoading] = useState(false);
   const [hint, setHint] = useState("");
   const [attemptCount, setAttemptCount] = useState(0);
+  const [selectedLanguage, setSelectedLanguage] =
+    useState<ProgrammingLanguage>("python");
 
   // Initialize assessment from location state or API
   useEffect(() => {
@@ -55,6 +67,7 @@ export default function AssessmentPage() {
         // Get first question
         const questionResponse = await api.post("/assessment/question", {
           topic: sessionData.recommendedTopic || "Programming",
+          language: selectedLanguage, // Include language in question request
         });
 
         console.log("Question response:", questionResponse.data);
@@ -80,7 +93,25 @@ export default function AssessmentPage() {
     };
 
     initializeAssessment();
-  }, [location.state, navigate]);
+  }, [location.state, navigate, selectedLanguage]);
+
+  // Reset answer when language changes
+  useEffect(() => {
+    if (evaluation) {
+      setAnswer("");
+      setEvaluation(null);
+      setHint("");
+      setAttemptCount(0);
+    }
+  }, [selectedLanguage]);
+
+  const handleLanguageChange = (language: ProgrammingLanguage) => {
+    setSelectedLanguage(language);
+    setAnswer("");
+    setHint("");
+    setAttemptCount(0);
+    // Don't clear evaluation here to allow language switching after submission
+  };
 
   const handleSubmit = async () => {
     if (!question || !answer.trim()) return;
@@ -88,10 +119,10 @@ export default function AssessmentPage() {
     setLoading(true);
     try {
       const response = await api.post("/assessment/evaluate", {
-        question: question.content, // instead of questionId
+        question: question.content,
         answer,
         topic: question.topic,
-        language: "Python", // or let user choose later
+        language: selectedLanguage,
       });
 
       setEvaluation(response.data);
@@ -107,11 +138,13 @@ export default function AssessmentPage() {
     setLoading(true);
     setAnswer("");
     setEvaluation(null);
+    setHint("");
 
     try {
       const response = await api.post("/assessment/next-question", {
         currentTopic: question?.topic,
         performance: evaluation?.score,
+        language: selectedLanguage,
       });
       setQuestion(response.data);
     } catch (error) {
@@ -130,6 +163,7 @@ export default function AssessmentPage() {
       const response = await api.post("/assessment/hint", {
         topic: question.topic,
         attempt: attemptCount + 1,
+        language: selectedLanguage,
       });
       setHint(response.data.hint);
       setAttemptCount((prev) => prev + 1);
@@ -138,6 +172,22 @@ export default function AssessmentPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const getLanguageIcon = (lang: ProgrammingLanguage) => {
+    return (
+      LANGUAGE_OPTIONS.find((option) => option.value === lang)?.icon || "💻"
+    );
+  };
+
+  const getPlaceholderText = () => {
+    const placeholders = {
+      python: "Write your Python code here...",
+      java: "Write your Java code here...",
+      javascript: "Write your JavaScript code here...",
+      go: "Write your Go code here...",
+    };
+    return placeholders[selectedLanguage];
   };
 
   if (loading && !question) {
@@ -181,18 +231,52 @@ export default function AssessmentPage() {
                 }}
               />
 
-              {/* Rest of your component remains the same */}
-              <div className="mt-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Your Answer
+              {/* Language Selection */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Select Programming Language
                 </label>
+                <div className="flex flex-wrap gap-3">
+                  {LANGUAGE_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => handleLanguageChange(option.value)}
+                      disabled={loading}
+                      className={`flex items-center space-x-2 px-4 py-2 rounded-lg border-2 transition-all duration-200 ${
+                        selectedLanguage === option.value
+                          ? "border-blue-500 bg-blue-50 text-blue-700 shadow-md"
+                          : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50"
+                      } disabled:opacity-50`}
+                    >
+                      <span className="text-lg">{option.icon}</span>
+                      <span className="font-medium">{option.label}</span>
+                      {selectedLanguage === option.value && (
+                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Answer Input */}
+              <div className="mt-6">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Your Answer
+                  </label>
+                  <span className="text-sm text-gray-500 flex items-center">
+                    {getLanguageIcon(selectedLanguage)}{" "}
+                    {selectedLanguage.charAt(0).toUpperCase() +
+                      selectedLanguage.slice(1)}
+                  </span>
+                </div>
                 <textarea
                   rows={8}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}
                   disabled={!!evaluation}
-                  placeholder="Write your Python code here..."
+                  placeholder={getPlaceholderText()}
                 />
               </div>
 
