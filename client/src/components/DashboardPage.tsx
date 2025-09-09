@@ -1,7 +1,6 @@
-// DashboardPage.tsx
 import { useAuth } from "../../src/context/AuthContext";
-import { Link, useNavigate } from "react-router-dom";
-import { useState, useEffect } from "react";
+import { Link, useNavigate, useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback } from "react";
 import api from "../../src/services/api";
 
 type RecentActivity = {
@@ -27,11 +26,67 @@ type UserStats = {
 export default function DashboardPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [stats, setStats] = useState<UserStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [tempName, setTempName] = useState(user?.username || "");
+
+  // Memoized fetch function
+  const fetchUserStats = useCallback(async () => {
+    if (!user) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await api.get(`/users/${user.id}/stats`);
+      console.log("Raw response:", response.data);
+
+      // Ensure all required properties exist with default values
+      const safeStats: UserStats = {
+        totalQuestionsAnswered: response.data?.totalQuestionsAnswered || 0,
+        correctAnswers: response.data?.correctAnswers || 0,
+        accuracy: response.data?.accuracy || 0,
+        strongestConcept: response.data?.strongestConcept || "",
+        weakestConcept: response.data?.weakestConcept || "",
+        avgTimePerQuestion: response.data?.avgTimePerQuestion || "0m 0s",
+        knowledgeStates: response.data?.knowledgeStates || {},
+        recentActivities: Array.isArray(response.data?.recentActivities)
+          ? response.data.recentActivities
+          : [],
+        currentStreaks: response.data?.currentStreaks || {},
+        learningVelocity: response.data?.learningVelocity || {},
+      };
+
+      setStats(safeStats);
+    } catch (err: any) {
+      console.error("Failed to fetch stats:", err);
+      setError(
+        err.response?.data?.msg ||
+          err.response?.data?.error ||
+          "Failed to load dashboard data"
+      );
+
+      // Fallback to safe mock data
+      const fallbackStats: UserStats = {
+        totalQuestionsAnswered: 0,
+        correctAnswers: 0,
+        accuracy: 0,
+        strongestConcept: "",
+        weakestConcept: "",
+        avgTimePerQuestion: "0m 0s",
+        knowledgeStates: {},
+        recentActivities: [],
+        currentStreaks: {},
+        learningVelocity: {},
+      };
+
+      setStats(fallbackStats);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!user) {
@@ -39,60 +94,17 @@ export default function DashboardPage() {
       return;
     }
 
-    const fetchUserStats = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await api.get(`/users/${user.id}/stats`);
-        console.log("Raw response:", response.data); // Debug log
-
-        // Ensure all required properties exist with default values
-        const safeStats: UserStats = {
-          totalQuestionsAnswered: response.data?.totalQuestionsAnswered || 0,
-          correctAnswers: response.data?.correctAnswers || 0,
-          accuracy: response.data?.accuracy || 0,
-          strongestConcept: response.data?.strongestConcept || "",
-          weakestConcept: response.data?.weakestConcept || "",
-          avgTimePerQuestion: response.data?.avgTimePerQuestion || "0m 0s",
-          knowledgeStates: response.data?.knowledgeStates || {},
-          recentActivities: Array.isArray(response.data?.recentActivities)
-            ? response.data.recentActivities
-            : [],
-          currentStreaks: response.data?.currentStreaks || {},
-          learningVelocity: response.data?.learningVelocity || {},
-        };
-
-        setStats(safeStats);
-      } catch (err: any) {
-        console.error("Failed to fetch stats:", err);
-        setError(
-          err.response?.data?.msg ||
-            err.response?.data?.error ||
-            "Failed to load dashboard data"
-        );
-
-        // Fallback to safe mock data
-        const fallbackStats: UserStats = {
-          totalQuestionsAnswered: 0,
-          correctAnswers: 0,
-          accuracy: 0,
-          strongestConcept: "",
-          weakestConcept: "",
-          avgTimePerQuestion: "0m 0s",
-          knowledgeStates: {},
-          recentActivities: [],
-          currentStreaks: {},
-          learningVelocity: {},
-        };
-
-        setStats(fallbackStats);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchUserStats();
-  }, [user, navigate]);
+  }, [user, navigate, fetchUserStats]);
+
+  // Refresh stats when returning from assessment
+  useEffect(() => {
+    if (location.state?.refreshStats) {
+      fetchUserStats();
+      // Clear the state to prevent continuous refreshing
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state, fetchUserStats]);
 
   const handleUpdateProfile = async () => {
     if (!user) return;
@@ -114,11 +126,21 @@ export default function DashboardPage() {
         userId: user.id,
       });
 
-      navigate("/assessment", { state: { sessionData: sessionResponse.data } });
+      navigate("/assessment", {
+        state: {
+          sessionData: sessionResponse.data,
+          returnTo: "/dashboard",
+        },
+      });
     } catch (error) {
       console.error("Failed to start assessment:", error);
       alert("Failed to start assessment. Please try again.");
     }
+  };
+
+  // Refresh stats manually
+  const refreshStats = () => {
+    fetchUserStats();
   };
 
   const getMasteryLevel = (mastery: number) => {
@@ -181,6 +203,27 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div className="mt-4 sm:mt-0 flex space-x-3">
+                <button
+                  onClick={refreshStats}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-md transition-colors flex items-center space-x-2"
+                  disabled={loading}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                  <span>Refresh</span>
+                </button>
                 {editMode ? (
                   <>
                     <button
@@ -247,7 +290,7 @@ export default function DashboardPage() {
               >
                 {loading ? (
                   <span className="flex items-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-700 mr-2"></div>
                     Loading...
                   </span>
                 ) : stats && Object.keys(stats.knowledgeStates).length > 0 ? (
@@ -436,6 +479,35 @@ export default function DashboardPage() {
                             </h3>
                             <p className="text-2xl font-bold text-purple-600">
                               {stats.accuracy.toFixed(1)}%
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-orange-50 p-4 rounded-lg border border-orange-100">
+                        <div className="flex items-center">
+                          <div className="bg-orange-100 p-2 rounded-lg">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="h-6 w-6 text-orange-600"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                              />
+                            </svg>
+                          </div>
+                          <div className="ml-4">
+                            <h3 className="text-sm font-medium text-orange-800">
+                              Avg Time
+                            </h3>
+                            <p className="text-2xl font-bold text-orange-600">
+                              {stats.avgTimePerQuestion}
                             </p>
                           </div>
                         </div>

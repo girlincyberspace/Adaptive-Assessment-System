@@ -18,20 +18,28 @@ router.get("/health", async (req, res) => {
 });
 
 // Start a new assessment session
-router.post("/assessment/start", async (req, res) => {
+router.post("/start", async (req, res) => {
   try {
     const { userId } = req.body;
 
     console.log("Starting assessment for userId:", userId);
 
-    // Get or create session from MongoDB
-    let session = await Session.findOne({ user: userId });
-
-    if (!session) {
-      // Create new session using Ollama service
-      const sessionData = await ollamaService.startSession(userId);
-      session = await sessionService.createSession(userId, sessionData);
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
     }
+
+    // Create new assessment session
+    const session = new Session({
+      user: userId,
+      sessionType: "assessment",
+      knowledgeStates: [],
+      questionHistory: [],
+      currentStreaks: new Map(),
+      learningVelocity: new Map(),
+      isCompleted: false,
+    });
+
+    await session.save();
 
     // Convert session data to frontend format
     const knowledgeState = {};
@@ -60,11 +68,230 @@ router.post("/assessment/start", async (req, res) => {
     console.log("Assessment session response:", responseData);
     res.json(responseData);
   } catch (error) {
-    console.error("Error in /assessment/start:", err);
+    console.error("Error in /assessment/start:", error);
     res.status(500).json({
       msg: "Server error",
-      error: err.message,
-      stack: err.stack,
+      error: error.message,
+      stack: error.stack,
+    });
+  }
+});
+
+// **NEW ENDPOINT** - End assessment session
+router.post("/end", async (req, res) => {
+  try {
+    const { sessionId, userId } = req.body;
+
+    console.log("Ending assessment session:", { sessionId, userId });
+
+    if (!sessionId && !userId) {
+      return res.status(400).json({
+        error: "Either sessionId or userId is required",
+      });
+    }
+
+    // Find session by ID or userId (fallback)
+    let session;
+    if (sessionId) {
+      session = await Session.findById(sessionId);
+    } else if (userId) {
+      session = await Session.findOne({ user: userId }).sort({ createdAt: -1 });
+    }
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    // Mark session as completed
+    session.isCompleted = true;
+    session.completedAt = new Date();
+    session.updatedAt = new Date();
+
+    await session.save();
+
+    // Calculate final session stats
+    const totalQuestions = session.questionHistory.length;
+    const correctAnswers = session.questionHistory.filter(
+      (q) => q.score >= 0.7
+    ).length;
+    const accuracy =
+      totalQuestions > 0 ? (correctAnswers / totalQuestions) * 100 : 0;
+
+    console.log(`Assessment session ${session._id} completed successfully`);
+
+    res.json({
+      success: true,
+      message: "Assessment session ended successfully",
+      sessionId: session._id,
+      summary: {
+        totalQuestions,
+        correctAnswers,
+        accuracy: Number(accuracy.toFixed(1)),
+        duration: session.completedAt - session.createdAt,
+        topicsCount: session.knowledgeStates.length,
+      },
+    });
+  } catch (error) {
+    console.error("Error ending assessment session:", error);
+    res.status(500).json({
+      error: "Failed to end assessment session",
+      message: error.message,
+    });
+  }
+});
+
+// Get next question - Updated to include sessionId in question request
+router.post("/question", async (req, res) => {
+  try {
+    const { topic, language, sessionId } = req.body;
+
+    // Get session for context
+    let session = null;
+    if (sessionId) {
+      session = await Session.findById(sessionId);
+    }
+
+    // Generate question using ollama service
+    const questionData = await ollamaService.generateQuestion(
+      topic || "Programming",
+      session?.getCurrentMastery?.(topic) || 0.3,
+      "coding problem",
+      session?.getTopicHistory?.(topic) || {}
+    );
+
+    // Return question in expected format
+    res.json({
+      id: generateQuestionId(),
+      question: questionData.question,
+      content: questionData.question,
+      topic: topic || "Programming",
+      difficulty: questionData.difficulty || "Medium",
+      questionId: questionData.questionId,
+      currentMastery: questionData.currentMastery || 0.3,
+    });
+  } catch (error) {
+    console.error("Error generating question:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Evaluate answer - Updated to work with new frontend format
+router.post("/evaluate", async (req, res) => {
+  try {
+    const {
+      question,
+      answer,
+      topic,
+      language,
+      sessionId,
+      userId,
+      questionId,
+      difficulty,
+    } = req.body;
+
+    console.log("Evaluating answer:", {
+      topic,
+      language,
+      sessionId,
+      userId,
+      answerLength: answer?.length,
+    });
+
+    // Evaluate using ollama service
+    const evaluation = await ollamaService.evaluateAnswer(
+      question,
+      answer,
+      topic,
+      language || "python"
+    );
+
+    // The frontend will call /users/update-stats separately
+    // So we just return the evaluation here
+    res.json({
+      feedback: evaluation.feedback,
+      score: evaluation.score,
+      suggestions: evaluation.suggestions || [],
+      executionResult: evaluation.executionResult || null,
+    });
+  } catch (error) {
+    console.error("Error evaluating answer:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get next question in sequence
+router.post("/next-question", async (req, res) => {
+  try {
+    const { currentTopic, performance, language, sessionId } = req.body;
+
+    // Get session for context
+    let session = null;
+    if (sessionId) {
+      session = await Session.findById(sessionId);
+    }
+
+    // Determine next topic based on performance and current state
+    let nextTopic = currentTopic;
+    if (session) {
+      const knowledgeState = {};
+      session.knowledgeStates.forEach((ks) => {
+        knowledgeState[ks.topic] = ks.mastery;
+      });
+
+      // Use ollama service to select optimal next topic
+      nextTopic = ollamaService.selectNextTopic(
+        knowledgeState,
+        session.getSessionHistory?.() || {}
+      );
+    }
+
+    const currentMastery = session?.getCurrentMastery?.(nextTopic) || 0.3;
+
+    // Generate next question
+    const questionData = await ollamaService.generateQuestion(
+      nextTopic,
+      currentMastery,
+      "coding problem",
+      session?.getTopicHistory?.(nextTopic) || {}
+    );
+
+    res.json({
+      id: generateQuestionId(),
+      content: questionData.question,
+      question: questionData.question,
+      topic: nextTopic,
+      difficulty: questionData.difficulty || "Medium",
+      currentMastery: questionData.currentMastery || currentMastery,
+      questionId: questionData.questionId,
+    });
+  } catch (error) {
+    console.error("Error getting next question:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get hint for current question
+router.post("/hint", async (req, res) => {
+  try {
+    const { topic, attempt, language } = req.body;
+
+    const hintData = await ollamaService.getAdaptiveHint(
+      topic,
+      0.3, // Default mastery for hints
+      "",
+      attempt || 1
+    );
+
+    res.json({
+      hint:
+        hintData.hint ||
+        hintData.suggestion ||
+        "Try breaking down the problem into smaller steps.",
+    });
+  } catch (error) {
+    console.error("Error generating hint:", error);
+    res.status(500).json({
+      hint: "Think about the problem step by step. What's the first thing you need to do?",
     });
   }
 });
@@ -76,7 +303,9 @@ router.post("/question/generate", async (req, res) => {
       req.body;
 
     // Get current session
-    const session = await Session.findOne({ user: userId });
+    const session = await Session.findOne({ user: userId }).sort({
+      createdAt: -1,
+    });
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -117,21 +346,29 @@ router.post("/question/generate", async (req, res) => {
   }
 });
 
-// Evaluate student answer
-router.post("/answer/evaluate", async (req, res) => {
+// Submit and evaluate a single question answer
+router.post("/submit-question", async (req, res) => {
   try {
     const {
+      sessionId,
       userId,
       question,
       studentAnswer,
       topic,
       programmingLanguage,
       difficulty,
+      timeSpent,
       currentMastery,
     } = req.body;
 
-    // Get session
-    const session = await Session.findOne({ user: userId });
+    // Get session by ID or userId (fallback)
+    let session;
+    if (sessionId) {
+      session = await Session.findById(sessionId);
+    } else if (userId) {
+      session = await Session.findOne({ user: userId }).sort({ createdAt: -1 });
+    }
+
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -156,44 +393,29 @@ router.post("/answer/evaluate", async (req, res) => {
       topic,
       question,
       answer: studentAnswer,
+      userAnswer: studentAnswer,
       score: evaluation.score,
       difficulty: difficulty || "medium",
       programmingLanguage: programmingLanguage || "Python",
+      timeSpent: timeSpent || 0,
       timestamp: new Date(),
       feedback: evaluation.feedback,
     };
 
-    // Update session in database
-    try {
-      // Add question to history
-      session.questionHistory.push(questionRecord);
+    // Add question to history using the model method
+    session.addQuestionHistory(questionRecord);
 
-      // Update knowledge state
-      const knowledgeStateIndex = session.knowledgeStates.findIndex(
-        (ks) => ks.topic === topic
-      );
-      if (knowledgeStateIndex !== -1) {
-        session.knowledgeStates[knowledgeStateIndex].mastery = newMastery;
-        session.knowledgeStates[knowledgeStateIndex].lastPracticed = new Date();
+    // Update knowledge state using the model method
+    const streak =
+      evaluation.score >= 0.7
+        ? (session.knowledgeStates.find((ks) => ks.topic === topic)?.streak ||
+            0) + 1
+        : 0;
 
-        // Update streak
-        if (evaluation.score >= 0.7) {
-          session.knowledgeStates[knowledgeStateIndex].streak =
-            Math.max(0, session.knowledgeStates[knowledgeStateIndex].streak) +
-            1;
-        } else {
-          session.knowledgeStates[knowledgeStateIndex].streak =
-            Math.min(0, session.knowledgeStates[knowledgeStateIndex].streak) -
-            1;
-        }
-      }
+    session.updateKnowledgeState(topic, newMastery, streak);
 
-      await session.save();
-      console.log("Session updated successfully");
-    } catch (dbError) {
-      console.error("Database update error:", dbError);
-      // Continue with response even if DB update fails
-    }
+    await session.save();
+    console.log("Session updated successfully with question submission");
 
     res.json({
       success: true,
@@ -203,7 +425,30 @@ router.post("/answer/evaluate", async (req, res) => {
         masteryChange: newMastery - (currentMastery || 0.0),
       },
       questionRecord,
+      sessionId: session._id,
     });
+  } catch (error) {
+    console.error("Error submitting question:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Complete assessment session (legacy endpoint - redirects to /end)
+router.post("/complete", async (req, res) => {
+  try {
+    req.url = "/end";
+    return router.handle(req, res);
+  } catch (error) {
+    console.error("Error completing assessment:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Evaluate student answer (legacy endpoint - redirects to evaluate)
+router.post("/answer/evaluate", async (req, res) => {
+  try {
+    req.url = "/evaluate";
+    return router.handle(req, res);
   } catch (error) {
     console.error("Error evaluating answer:", error);
     res.status(500).json({ error: error.message });
@@ -237,11 +482,11 @@ router.get("/analytics/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // Get session from database
-    const session = await Session.findOne({ user: userId }).populate(
-      "user",
-      "name email"
-    );
+    // Get most recent session from database
+    const session = await Session.findOne({ user: userId })
+      .sort({ updatedAt: -1 })
+      .populate("user", "username email");
+
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -256,83 +501,10 @@ router.get("/analytics/:userId", async (req, res) => {
       success: true,
       analytics,
       user: session.user,
+      sessionId: session._id,
     });
   } catch (error) {
     console.error("Error getting analytics:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get user stats (optimized version of your existing endpoint)
-router.get("/users/:userId/stats", async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    const session = await Session.findOne({ user: userId }).populate(
-      "user",
-      "name email createdAt"
-    );
-
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
-
-    // Calculate basic stats
-    const totalQuestions = session.questionHistory.length;
-    const correctAnswers = session.questionHistory.filter(
-      (q) => q.score >= 0.7
-    ).length;
-    const accuracy =
-      totalQuestions > 0 ? (correctAnswers / totalQuestions) * 100 : 0;
-
-    // Find strongest/weakest concepts
-    let strongestConcept = "";
-    let weakestConcept = "";
-    let maxMastery = 0;
-    let minMastery = 1;
-
-    session.knowledgeStates.forEach((ks) => {
-      if (ks.mastery > maxMastery) {
-        maxMastery = ks.mastery;
-        strongestConcept = ks.topic;
-      }
-      if (ks.mastery < minMastery) {
-        minMastery = ks.mastery;
-        weakestConcept = ks.topic;
-      }
-    });
-
-    // Recent activities
-    const recentActivities = session.questionHistory
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(0, 5)
-      .map((q) => ({
-        concept: q.topic,
-        difficulty: q.difficulty,
-        result: q.score >= 0.7 ? "Correct" : "Incorrect",
-        timestamp: q.timestamp,
-        score: q.score,
-      }));
-
-    // Knowledge states as object
-    const knowledgeStatesObj = session.knowledgeStates.reduce((acc, curr) => {
-      acc[curr.topic] = curr.mastery;
-      return acc;
-    }, {});
-
-    res.json({
-      totalQuestionsAnswered: totalQuestions,
-      correctAnswers,
-      accuracy: Math.round(accuracy),
-      strongestConcept,
-      weakestConcept,
-      avgTimePerQuestion: "1m 24s", // Calculate from actual data if available
-      knowledgeStates: knowledgeStatesObj,
-      recentActivities,
-      user: session.user,
-    });
-  } catch (error) {
-    console.error("Error getting user stats:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -366,121 +538,24 @@ router.post("/topic/select", async (req, res) => {
   }
 });
 
-// Get next question in assessment (updated to use new service)
-router.post("/assessment/next-question", async (req, res) => {
+// Get session details
+router.get("/session/:sessionId", async (req, res) => {
   try {
-    const { userId, currentTopic, performance } = req.body;
+    const { sessionId } = req.params;
 
-    // Get session
-    const session = await Session.findOne({ user: userId });
+    const session = await Session.findById(sessionId);
+
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // Convert session data
-    const knowledgeState = {};
-    session.knowledgeStates.forEach((ks) => {
-      knowledgeState[ks.topic] = ks.mastery;
-    });
-
-    const sessionHistory = {};
-    session.questionHistory.forEach((q) => {
-      if (!sessionHistory[q.topic]) {
-        sessionHistory[q.topic] = [];
-      }
-      sessionHistory[q.topic].push(q);
-    });
-
-    // Get next recommended topic
-    const nextTopic =
-      currentTopic ||
-      ollamaService.getNextRecommendedTopic(knowledgeState, sessionHistory);
-    const currentMastery = knowledgeState[nextTopic] || 0.0;
-
-    // Generate question
-    const questionData = await ollamaService.generateQuestion(
-      nextTopic,
-      currentMastery,
-      "coding problem",
-      sessionHistory
-    );
-
-    res.json({
-      id: generateQuestionId(),
-      content: questionData.question,
-      topic: nextTopic,
-      difficulty: questionData.difficulty,
-      currentMastery: questionData.currentMastery,
-      questionId: questionData.questionId,
-    });
+    res.json(session);
   } catch (error) {
-    console.error("Error getting next question:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Update session with performance data
-router.post("/session/update", async (req, res) => {
-  try {
-    const { userId, topic, score, difficulty, question, answer, timeSpent } =
-      req.body;
-
-    const session = await Session.findOne({ user: userId });
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
-
-    // Create performance record
-    const performanceRecord = {
-      topic,
-      question,
-      answer,
-      score,
-      difficulty,
-      timeSpent: timeSpent || 0,
-      timestamp: new Date(),
-    };
-
-    // Add to question history
-    session.questionHistory.push(performanceRecord);
-
-    // Update knowledge state
-    const knowledgeStateIndex = session.knowledgeStates.findIndex(
-      (ks) => ks.topic === topic
-    );
-    if (knowledgeStateIndex !== -1) {
-      const currentMastery =
-        session.knowledgeStates[knowledgeStateIndex].mastery;
-      const newMastery = ollamaService.calculateMasteryUpdate(
-        currentMastery,
-        score,
-        difficulty
-      );
-
-      session.knowledgeStates[knowledgeStateIndex].mastery = newMastery;
-      session.knowledgeStates[knowledgeStateIndex].lastPracticed = new Date();
-
-      // Update streak
-      if (score >= 0.7) {
-        session.knowledgeStates[knowledgeStateIndex].streak =
-          Math.max(0, session.knowledgeStates[knowledgeStateIndex].streak) + 1;
-      } else {
-        session.knowledgeStates[knowledgeStateIndex].streak =
-          Math.min(0, session.knowledgeStates[knowledgeStateIndex].streak) - 1;
-      }
-    }
-
-    await session.save();
-
-    res.json({
-      success: true,
-      message: "Session updated successfully",
-      newMastery: session.knowledgeStates[knowledgeStateIndex]?.mastery || 0,
-      streak: session.knowledgeStates[knowledgeStateIndex]?.streak || 0,
+    console.error("Error fetching session:", error);
+    res.status(500).json({
+      error: "Failed to fetch session",
+      message: error.message,
     });
-  } catch (error) {
-    console.error("Error updating session:", error);
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -489,7 +564,9 @@ router.post("/learning-path", async (req, res) => {
   try {
     const { userId, knowledgeState, sessionHistory } = req.body;
 
-    const session = await Session.findOne({ user: userId });
+    const session = await Session.findOne({ user: userId }).sort({
+      createdAt: -1,
+    });
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -515,10 +592,11 @@ router.post("/learning-path", async (req, res) => {
       });
     }
 
-    const recommendations = ollamaService.generateLearningRecommendations(
-      currentKnowledge,
-      currentHistory
-    );
+    const recommendations =
+      ollamaService.generateLearningRecommendations?.(
+        currentKnowledge,
+        currentHistory
+      ) || [];
 
     res.json({
       success: true,
@@ -530,76 +608,6 @@ router.post("/learning-path", async (req, res) => {
     });
   } catch (error) {
     console.error("Error generating learning path:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Legacy endpoints (keeping for backward compatibility)
-
-// Original start endpoint
-router.post("/start", async (req, res) => {
-  try {
-    const { userId } = req.body;
-    const sessionData = await ollamaService.startSession(userId);
-    await sessionService.createSession(userId, sessionData);
-    res.json(sessionData);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Original question endpoint
-router.post("/question", async (req, res) => {
-  try {
-    const { userId, topic, Mastery } = req.body;
-
-    const questionData = await ollamaService.generateQuestion(
-      topic,
-      Mastery || 0.0,
-      "coding problem"
-    );
-
-    res.json({ question: questionData.question });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Original evaluate endpoint (keeping your existing logic)
-router.post("/evaluate", async (req, res) => {
-  try {
-    const { userId, question, answer, topic, language } = req.body;
-
-    const evaluation = await ollamaService.evaluateAnswer(
-      question,
-      answer,
-      topic,
-      language || "Python"
-    );
-
-    // Update session with evaluation results
-    await sessionService.updateSession(userId, topic, evaluation);
-
-    res.json(evaluation);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Original hint endpoint
-router.post("/hint", async (req, res) => {
-  try {
-    const { topic, Mastery, context, attempt } = req.body;
-
-    const hintData = await ollamaService.getAdaptiveHint(
-      topic,
-      Mastery || 0.0,
-      context || "",
-      attempt || 1
-    );
-
-    res.json({ hint: hintData.hint });
-  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

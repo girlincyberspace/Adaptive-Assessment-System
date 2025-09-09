@@ -1,4 +1,4 @@
-// AssessmentPage.tsx
+// AssessmentPage.tsx - Updated with stats tracking
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../services/api";
@@ -41,6 +41,8 @@ export default function AssessmentPage() {
   const [attemptCount, setAttemptCount] = useState(0);
   const [selectedLanguage, setSelectedLanguage] =
     useState<ProgrammingLanguage>("python");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   // Initialize assessment from location state or API
   useEffect(() => {
@@ -51,23 +53,28 @@ export default function AssessmentPage() {
         console.log("Session data:", sessionData);
 
         if (!sessionData) {
-          const userId = localStorage.getItem("userId");
-          if (!userId) {
+          const storedUserId = localStorage.getItem("userId");
+          if (!storedUserId) {
             console.error("No userId found, redirecting to login");
             navigate("/login");
             return;
           }
 
           const response = await api.post("/assessment/start", {
-            userId: userId,
+            userId: storedUserId,
           });
           sessionData = response.data;
         }
 
+        // Store session info for tracking
+        setSessionId(sessionData.sessionId);
+        setUserId(sessionData.userId);
+
         // Get first question
         const questionResponse = await api.post("/assessment/question", {
           topic: sessionData.recommendedTopic || "Programming",
-          language: selectedLanguage, // Include language in question request
+          language: selectedLanguage,
+          sessionId: sessionData.sessionId, // Pass session ID
         });
 
         console.log("Question response:", questionResponse.data);
@@ -110,11 +117,10 @@ export default function AssessmentPage() {
     setAnswer("");
     setHint("");
     setAttemptCount(0);
-    // Don't clear evaluation here to allow language switching after submission
   };
 
   const handleSubmit = async () => {
-    if (!question || !answer.trim()) return;
+    if (!question || !answer.trim() || !sessionId || !userId) return;
 
     setLoading(true);
     try {
@@ -123,14 +129,43 @@ export default function AssessmentPage() {
         answer,
         topic: question.topic,
         language: selectedLanguage,
+        sessionId,
+        userId,
+        questionId: question.id,
+        difficulty: question.difficulty,
       });
 
       setEvaluation(response.data);
       setAttemptCount(0);
+
+      // Update user stats after evaluation
+      await updateUserStats(response.data);
     } catch (error) {
       console.error("Evaluation failed:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const updateUserStats = async (evaluationData: Evaluation) => {
+    if (!userId || !question) return;
+
+    try {
+      await api.post("/users/update-stats", {
+        userId,
+        sessionId,
+        questionData: {
+          topic: question.topic,
+          difficulty: question.difficulty,
+          score: evaluationData.score,
+          result: evaluationData.score >= 0.7 ? "Correct" : "Incorrect",
+          language: selectedLanguage,
+          timestamp: new Date().toISOString(),
+        },
+      });
+      console.log("User stats updated successfully");
+    } catch (error) {
+      console.error("Failed to update user stats:", error);
     }
   };
 
@@ -145,11 +180,15 @@ export default function AssessmentPage() {
         currentTopic: question?.topic,
         performance: evaluation?.score,
         language: selectedLanguage,
+        sessionId,
       });
       setQuestion(response.data);
     } catch (error) {
       console.error("Failed to get next question:", error);
-      navigate("/dashboard");
+      // Navigate back to dashboard with refresh flag
+      navigate("/dashboard", {
+        state: { refreshStats: true },
+      });
     } finally {
       setLoading(false);
     }
@@ -172,6 +211,24 @@ export default function AssessmentPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleEndAssessment = async () => {
+    if (sessionId && userId) {
+      try {
+        await api.post("/assessment/end", {
+          sessionId,
+          userId,
+        });
+      } catch (error) {
+        console.error("Failed to end assessment:", error);
+      }
+    }
+
+    // Navigate back to dashboard with refresh flag
+    navigate("/dashboard", {
+      state: { refreshStats: true },
+    });
   };
 
   const getLanguageIcon = (lang: ProgrammingLanguage) => {
@@ -212,18 +269,25 @@ export default function AssessmentPage() {
                   </span>
                   <h2 className="text-xl font-bold">{question.topic}</h2>
                 </div>
-                <button
-                  onClick={() => navigate("/dashboard")}
-                  className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-md transition-colors"
-                >
-                  Exit Assessment
-                </button>
+                <div className="flex space-x-3">
+                  <button
+                    onClick={handleEndAssessment}
+                    className="px-4 py-2 bg-green-500/90 hover:bg-green-600 rounded-md transition-colors"
+                  >
+                    Finish Assessment
+                  </button>
+                  <button
+                    onClick={() => navigate("/dashboard")}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-md transition-colors"
+                  >
+                    Exit
+                  </button>
+                </div>
               </div>
             </div>
 
             {/* Question Content */}
             <div className="p-6">
-              {/* Convert markdown-style content to readable format */}
               <div
                 className="prose max-w-none mb-6"
                 dangerouslySetInnerHTML={{
@@ -300,12 +364,20 @@ export default function AssessmentPage() {
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={handleNextQuestion}
-                    className="px-6 py-3 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-                  >
-                    Next Question
-                  </button>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleNextQuestion}
+                      className="px-6 py-3 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+                    >
+                      Next Question
+                    </button>
+                    <button
+                      onClick={handleEndAssessment}
+                      className="px-6 py-3 bg-gray-600 text-white font-medium rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+                    >
+                      Finish Assessment
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -334,7 +406,6 @@ export default function AssessmentPage() {
                         : "bg-red-50 border-red-400"
                     }`}
                   >
-                    {/* Score Header */}
                     <div
                       className={`px-6 py-4 ${
                         evaluation.score >= 0.7
@@ -385,7 +456,6 @@ export default function AssessmentPage() {
                       </div>
                     </div>
 
-                    {/* Formatted Feedback Content */}
                     <div className="px-6 py-4">
                       <div
                         className={`prose prose-sm max-w-none ${
@@ -413,7 +483,6 @@ export default function AssessmentPage() {
                     </div>
                   </div>
 
-                  {/* Progress Indicator */}
                   <div className="mt-4">
                     <div className="flex justify-between text-xs text-gray-500 mb-1">
                       <span>Progress</span>
